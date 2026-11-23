@@ -1,0 +1,164 @@
+---
+title: "Customer Behavior Analytics & RFM Segmentation (UCI Online Retail)"
+author: "Loua Benafia"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 5)
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(janitor)
+library(scales)
+library(cluster)
+library(knitr)
+```
+
+## 1. Executive Summary
+
+This report analyzes `541,909` transaction records from the **UCI Online Retail** dataset (December 2010 – December 2011) to uncover revenue trends, product and market concentration, customer purchasing behavior, and actionable customer segments using **RFM analysis** and **K-Means clustering**.
+
+## 2. Data Import & Cleaning
+
+```{r load-clean}
+raw_retail <- read_excel("../data/raw/Online Retail.xlsx")
+
+retail_dedup <- raw_retail %>%
+  clean_names() %>%
+  mutate(
+    customer_id = as.character(customer_id),
+    quantity    = as.numeric(quantity),
+    unit_price  = as.numeric(unit_price)
+  ) %>%
+  distinct()
+
+retail_sales <- retail_dedup %>%
+  filter(!str_starts(invoice_no, "C"), quantity > 0, unit_price > 0) %>%
+  mutate(
+    sales_value   = quantity * unit_price,
+    invoice_day   = as.Date(invoice_date),
+    invoice_month = floor_date(invoice_date, unit = "month")
+  )
+
+retail_customers <- retail_sales %>%
+  filter(!is.na(customer_id))
+
+cleaning_audit <- tibble(
+  Stage = c(
+    "1. Raw dataset",
+    "2. After removing exact duplicates",
+    "3. Valid sales (qty > 0, unit_price > 0, non-C)",
+    "4. Valid sales with known customer_id (RFM base)"
+  ),
+  Rows = c(nrow(raw_retail), nrow(retail_dedup), nrow(retail_sales), nrow(retail_customers)),
+  Removed = c(
+    0,
+    nrow(raw_retail) - nrow(retail_dedup),
+    nrow(retail_dedup) - nrow(retail_sales),
+    nrow(retail_sales) - nrow(retail_customers)
+  )
+)
+kable(cleaning_audit, format.args = list(big.mark = ","))
+```
+
+- **Duplicates:** `5,268` exact duplicate rows were removed.
+- **Cancellations & Adjustments:** `9,251` `"C"` cancellation rows, negative/zero quantities, and non-positive unit prices (including `2` bad-debt adjustment rows) were excluded from valid sales.
+- **Missing `CustomerID`:** Retained in `retail_sales` for aggregate sales EDA; excluded from `retail_customers` for RFM and clustering.
+
+## 3. Exploratory Data Analysis
+
+```{r eda-monthly}
+monthly_sales <- retail_sales %>%
+  group_by(invoice_month) %>%
+  summarise(monthly_revenue = sum(sales_value), n_invoices = n_distinct(invoice_no), .groups = "drop")
+
+ggplot(monthly_sales, aes(x = invoice_month, y = monthly_revenue)) +
+  geom_line(color = "#2C3E50", linewidth = 1) +
+  geom_point(color = "#E74C3C", size = 2.5) +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%b %Y") +
+  scale_y_continuous(labels = label_dollar(prefix = "£", scale = 1e-3, suffix = "K")) +
+  labs(title = "Monthly Gross Revenue (Valid Sales)", x = "Month", y = "Revenue (£K)") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(face = "bold"))
+```
+
+```{r eda-countries}
+country_summary <- retail_sales %>%
+  group_by(country) %>%
+  summarise(
+    total_revenue     = sum(sales_value),
+    n_invoices        = n_distinct(invoice_no),
+    n_customers_known = n_distinct(customer_id, na.rm = TRUE),
+    revenue_share_pct = round(sum(sales_value) / sum(retail_sales$sales_value) * 100, 2),
+    .groups           = "drop"
+  ) %>%
+  arrange(desc(total_revenue))
+
+kable(head(country_summary, 10), digits = 2, format.args = list(big.mark = ","))
+```
+
+## 4. RFM & K-Means Customer Segmentation
+
+```{r rfm-kmeans}
+ref_date <- max(retail_customers$invoice_day) + 1
+
+rfm <- retail_customers %>%
+  group_by(customer_id) %>%
+  summarise(
+    recency   = as.numeric(ref_date - max(invoice_day)),
+    frequency = n_distinct(invoice_no),
+    monetary  = sum(sales_value),
+    .groups   = "drop"
+  )
+
+rfm_scaled <- rfm %>%
+  mutate(r_log = log1p(recency), f_log = log1p(frequency), m_log = log1p(monetary)) %>%
+  select(r_log, f_log, m_log) %>%
+  scale() %>%
+  as_tibble()
+
+set.seed(42)
+km_4 <- kmeans(rfm_scaled, centers = 4, nstart = 25)
+rfm_clustered <- rfm %>% mutate(cluster = factor(km_4$cluster))
+
+cluster_profile <- rfm_clustered %>%
+  group_by(cluster) %>%
+  summarise(
+    n_customers      = n(),
+    customer_share   = round(n() / nrow(rfm_clustered) * 100, 1),
+    median_recency   = round(median(recency), 1),
+    median_frequency = round(median(frequency), 1),
+    median_monetary  = round(median(monetary), 1),
+    total_revenue    = round(sum(monetary), 0),
+    revenue_share    = round(sum(monetary) / sum(rfm_clustered$monetary) * 100, 1),
+    .groups          = "drop"
+  ) %>%
+  arrange(desc(median_monetary))
+
+kable(cluster_profile, format.args = list(big.mark = ","))
+```
+
+## 5. Statistical Analysis
+
+```{r stats}
+spearman_cor <- round(cor(select(rfm, recency, frequency, monetary), method = "spearman"), 3)
+kable(spearman_cor, caption = "Spearman Rank Correlations Among RFM Metrics")
+
+kw_test <- kruskal.test(monetary ~ cluster, data = rfm_clustered)
+kw_test
+```
+
+## 6. Recommendations & Limitations
+
+- **Protect & reward High-Value Loyalists (`16.8%` of customers, `65.1%` of customer-identified revenue):** Prioritize VIP retention, early seasonal access before the Q4 peak, and dedicated account support.
+- **Nurture Mid-Tier Regulars (`26.8%` of customers, `23.6%` of revenue):** Use replenishment reminders and bundle offers to lift purchase frequency.
+- **Convert Recent Low-Frequency buyers (`20.2%` of customers):** Trigger second-purchase incentives within 30 days of their initial order.
+- **Selective win-back for Inactive / One-Time buyers (`36.2%` of customers, `6.2%` of revenue):** Run low-cost automated re-engagement rather than heavy discounting.
+- **Limitations:** Analysis reflects one UK-based retailer over ~12 months (`Dec 2010 – Dec 2011`), excludes returns/cancellations from gross sales, and lacks margin or marketing-campaign response data.

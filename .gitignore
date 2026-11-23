@@ -1,0 +1,23 @@
+# R / RStudio
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Data files (large raw/processed files should not be committed)
+data/raw/*.xlsx
+data/raw/*.csv
+data/raw/*.zip
+data/processed/*.rds
+data/processed/*.csv
+
+# Rendered reports and intermediate knitr files
+reports/*.html
+reports/*.pdf
+reports/*_files/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

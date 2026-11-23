@@ -1,0 +1,5 @@
+stage,rows,rows_removed_from_prev
+1. Raw dataset,541909,0
+2. After removing exact duplicates,536641,5268
+"3. Valid sales (qty > 0, unit_price > 0, non-C)",524878,11763
+4. Valid sales with known customer_id (RFM base),392692,132186
