@@ -21,3 +21,6 @@ reports/*_files/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Node / Vite dashboard
+dashboard/node_modules/
